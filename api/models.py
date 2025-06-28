@@ -218,19 +218,53 @@ def check_and_trigger_preventive_tasks(ordre_imputation_instance):
 
     current_total_hours = ordre_imputation_instance.total_hours_of_work
     last_notified_actual_threshold = ordre_imputation_instance.last_notified_threshold or 0
-    actual_threshold_to_warn_for = None
     
-    for full_threshold_value in defined_thresholds:
-        warning_trigger_point = full_threshold_value * 0.90 
+    # Generate all possible future trigger points based on a 1600-hour cycle
+    all_trigger_points = []
+    base_thresholds = [t for t in defined_thresholds if t > 0]
+    
+    # Determine the number of cycles to check, going a bit beyond the current hours.
+    max_hours_to_check = float(current_total_hours) + 2000.0 
+    
+    k = 0
+    while True:
+        cycle_base = k * 1600
+        generated_a_trigger_in_cycle = False
+        for thresh in base_thresholds:
+            trigger = cycle_base + thresh
+            if trigger > max_hours_to_check and k > 0:
+                break
+            all_trigger_points.append(trigger)
+            generated_a_trigger_in_cycle = True
+        
+        if not generated_a_trigger_in_cycle or (cycle_base > max_hours_to_check and k > 0) :
+            break
+        k += 1
+
+    all_trigger_points = sorted(list(set(all_trigger_points)))
+
+    actual_threshold_to_warn_for = None
+    template_trigger_hours = None
+
+    for full_threshold_value in all_trigger_points:
+        warning_trigger_point = full_threshold_value * 0.90
         
         if current_total_hours >= warning_trigger_point and full_threshold_value > last_notified_actual_threshold:
             actual_threshold_to_warn_for = full_threshold_value
+            # Determine which template to use
+            template_trigger_hours = full_threshold_value % 1600
+            if template_trigger_hours == 0:
+                template_trigger_hours = 1600
+            
+            if template_trigger_hours not in defined_thresholds:
+                continue
+
             break
-    
-    if actual_threshold_to_warn_for:
+
+    if actual_threshold_to_warn_for and template_trigger_hours:
         templates_for_trigger = PreventiveTaskTemplate.objects.filter(
             ordre_imputation=ordre_imputation_instance, 
-            trigger_hours=actual_threshold_to_warn_for
+            trigger_hours=template_trigger_hours
         )
 
         if templates_for_trigger.exists():
@@ -279,7 +313,6 @@ def check_and_trigger_preventive_tasks(ordre_imputation_instance):
             print(f"OI {ordre_imputation_instance.value} is approaching {actual_threshold_to_warn_for}h (90% warning point crossed), but no preventive task templates found for this specific threshold.")
             ordre_imputation_instance.last_notified_threshold = actual_threshold_to_warn_for
             ordre_imputation_instance.save(update_fields=['last_notified_threshold'])
-
 
 @receiver(post_save, sender=Task)
 def update_oi_total_hours_on_task_save(sender, instance, created, **kwargs):
