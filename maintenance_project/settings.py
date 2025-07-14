@@ -85,13 +85,14 @@ WSGI_APPLICATION = 'maintenance_project.wsgi.application'
 #         'NAME': BASE_DIR / 'db.sqlite3',
 #     }
 # }
+
 DATABASES = {
-    'default': {
+ 'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'inspire-trade',
-        'USER': 'user-inspire',
-        'PASSWORD': 'adminpostgresql',
-        'HOST': '162.19.246.215',  # Or the IP address of your PostgreSQL server
+        'NAME': 'GMAO',
+        'USER': 'postgres',
+        'PASSWORD': 'Marealb2025',
+        'HOST': '51.38.179.84',  # Or the IP address of your PostgreSQL server
         'PORT': '5432',       # Default PostgreSQL port
     }
 }

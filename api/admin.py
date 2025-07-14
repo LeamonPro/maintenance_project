@@ -61,6 +61,7 @@ class TaskAdmin(admin.ModelAdmin):
         'assigned_to_profile_name', 'display_techniciens', 
         'start_date', 'start_time', 'end_date',
         'estimated_hours', 'hours_of_work', 'closed_at',
+        'permis_de_travail',
         'created_at', 'updated_at'
     )
     search_fields = ('task_id_display', 'id', 'ordre__value', 'tasks', 'assigned_to_profile__name', 'techniciens__name')

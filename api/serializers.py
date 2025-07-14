@@ -144,7 +144,10 @@ class TaskSerializer(serializers.ModelSerializer):
     # --- NEW & MODIFIED FIELDS ---
     start_time = serializers.TimeField(required=False, allow_null=True, format='%H:%M:%S', input_formats=['%H:%M:%S', '%H:%M'])
     estimated_hours = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    actual_hours_worked = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True, allow_null=True)
     closed_at = serializers.DateTimeField(read_only=True, format='%Y-%m-%d %H:%M:%S')
+    permis_de_travail = serializers.BooleanField(required=False)
+
 
     class Meta:
         model = Task
@@ -154,13 +157,14 @@ class TaskSerializer(serializers.ModelSerializer):
             'epi', 'pdr', 'status', 
             'assigned_to_profile_id', 'assignedTo',
             'start_date', 'end_date', 'start_time',
-            'estimated_hours', 'hours_of_work', 'closed_at',
+            'estimated_hours', 'actual_hours_worked', 'hours_of_work', 'closed_at',
             'advancement_notes', 
-            'created_at', 'updated_at'
+            'created_at', 'updated_at',
+            'permis_de_travail'
         ]
         read_only_fields = [
             'created_at', 'updated_at', 'ordre', 
-            'technicien_names', 'task_id_display', 'closed_at'
+            'technicien_names', 'task_id_display', 'closed_at', 'actual_hours_worked'
         ]
 
     def get_technicien_names(self, obj):
@@ -278,6 +282,13 @@ class PreventiveChecklistSubmissionSerializer(serializers.Serializer):
         help_text="Liste des tâches de la checklist avec leur statut de complétion."
     )
     notes = serializers.CharField(required=False, allow_blank=True, help_text="Notes additionnelles sur l'intervention.")
+    technicien_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Technician.objects.all(),
+        many=True,
+        required=False,
+        allow_null=True,
+        help_text="Liste des IDs des techniciens assignés à cette tâche préventive."
+    )
     # The new total hours for the OI will be submitted via a standard Task update if needed,
     # or when the Chef creates a regular task that updates the OI's hours.
     # This submission is purely for the checklist items.
@@ -294,6 +305,8 @@ class PreventiveChecklistSubmissionSerializer(serializers.Serializer):
 
         ordre_imputation = validated_data['ordre_imputation_instance']
         checklist_items_data = validated_data['checklist_items']
+        techniciens_data = validated_data.pop('technicien_ids', None)
+
         
         formatted_task_descriptions = []
         for item in checklist_items_data:
@@ -321,6 +334,9 @@ class PreventiveChecklistSubmissionSerializer(serializers.Serializer):
         # For now, if Admin submits, it's just recorded without specific assignment via this flow.
 
         task = Task.objects.create(**new_preventive_task_data)
+        if techniciens_data:
+            task.techniciens.set(techniciens_data)
+
         generate_task_id_display(task)
         task.refresh_from_db()
 

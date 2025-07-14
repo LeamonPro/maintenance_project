@@ -3,40 +3,41 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.contrib.auth.models import User
 from .models import (
-    UserProfile, 
-    Technician, 
-    OrdreImputation, 
-    Task, 
-    AdvancementNote, 
-    Notification, 
-    AdvancementNoteImage, 
+    UserProfile,
+    Technician,
+    OrdreImputation,
+    Task,
+    AdvancementNote,
+    Notification,
+    AdvancementNoteImage,
     PreventiveTaskTemplate,
     generate_task_id_display,
     check_and_trigger_preventive_tasks
 )
 from .serializers import (
-    UserProfileSerializer, 
-    TechnicianSerializer, 
+    UserProfileSerializer,
+    TechnicianSerializer,
     OrdreImputationSerializer,
-    TaskSerializer, 
-    AdvancementNoteSerializer, 
+    TaskSerializer,
+    AdvancementNoteSerializer,
     NotificationSerializer,
-    AdminUserListSerializer, 
-    AdminUserCreateSerializer, 
+    AdminUserListSerializer,
+    AdminUserCreateSerializer,
     AdminUserUpdateSerializer,
     CycleVisiteUpdateSerializer,
-    PreventiveTaskTemplateSerializer, 
+    PreventiveTaskTemplateSerializer,
     PreventiveChecklistSubmissionSerializer
 )
-from rest_framework import serializers as drf_serializers_module 
+from rest_framework import serializers as drf_serializers_module
 from rest_framework import exceptions as drf_exceptions
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.authtoken.models import Token
-from rest_framework.permissions import IsAuthenticated, OR # Ensure OR is imported
+from rest_framework.permissions import IsAuthenticated, OR
 from django.utils import timezone
 from django.db.models import Q
 from django.db import transaction
-import traceback 
+import traceback
+from datetime import datetime
 
 from django.http import HttpResponse
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -53,17 +54,17 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 class PassthroughPDFRenderer(BaseRenderer):
     media_type = 'application/pdf'
     format = 'pdf'
-    charset = None 
+    charset = None
     def render(self, data, media_type=None, renderer_context=None):
         if isinstance(data, HttpResponse):
             return data
         if renderer_context and 'response' in renderer_context and renderer_context['response'].status_code == 204:
-             return b'' 
+             return b''
         return b"Error: PDF content was not a direct HttpResponse."
 
 
 # --- Helper function to create notifications ---
-def create_notification(message, recipient_type, recipient_role, notification_category, 
+def create_notification(message, recipient_type, recipient_role, notification_category,
                         recipient_user_id=None, task_id=None, ordre_imputation_id=None):
     try:
         notif_data = {
@@ -72,19 +73,19 @@ def create_notification(message, recipient_type, recipient_role, notification_ca
             'recipient_role': recipient_role,
             'notification_category': notification_category,
         }
-        
+
         if recipient_user_id:
             user_instance = User.objects.get(id=recipient_user_id)
             notif_data['recipient_user'] = user_instance
-        
+
         if task_id:
             task_instance = Task.objects.get(id=task_id)
             notif_data['task_related'] = task_instance
-        
+
         if ordre_imputation_id:
             oi_instance = OrdreImputation.objects.get(id_ordre=ordre_imputation_id)
             notif_data['ordre_imputation_related'] = oi_instance
-            
+
         Notification.objects.create(**notif_data)
     except User.DoesNotExist:
         print(f"Error creating notification: User with ID {recipient_user_id} does not exist.")
@@ -117,7 +118,7 @@ class IsOwnerOrAdminForTask(permissions.BasePermission):
         return False
 
 class IsOwnerOrAdminForAdvancementNote(permissions.BasePermission):
-    def has_object_permission(self, request, view, obj): 
+    def has_object_permission(self, request, view, obj):
         if not request.user or not request.user.is_authenticated or not hasattr(request.user, 'profile'):
             return False
         if request.user.profile.role == 'Admin':
@@ -129,7 +130,7 @@ class IsOwnerOrAdminForAdvancementNote(permissions.BasePermission):
 # --- ViewSets ---
 class UserProfileViewSet(viewsets.ModelViewSet):
     queryset = UserProfile.objects.all().select_related('user')
-    serializer_class = UserProfileSerializer 
+    serializer_class = UserProfileSerializer
     permission_classes = [IsAdminUser]
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -139,20 +140,20 @@ class UserProfileViewSet(viewsets.ModelViewSet):
         profile = request.user.profile
         serializer = self.get_serializer(profile)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'], url_path='by-role/(?P<role_name>[^/.]+)', permission_classes=[IsAdminUser])
     def by_role(self, request, role_name=None):
         valid_roles = [r[0] for r in UserProfile.ROLE_CHOICES]
         if role_name not in valid_roles:
             return Response({"error": "Invalid role specified. Valid roles are: " + ", ".join(valid_roles)}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         profiles = UserProfile.objects.filter(role=role_name).select_related('user')
         serializer = self.get_serializer(profiles, many=True)
         return Response(serializer.data)
 
 class TechnicianViewSet(viewsets.ModelViewSet):
     queryset = Technician.objects.all()
-    serializer_class = TechnicianSerializer 
+    serializer_class = TechnicianSerializer
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
             return [IsAdminUser()]
@@ -160,14 +161,14 @@ class TechnicianViewSet(viewsets.ModelViewSet):
 
 class OrdreImputationViewSet(viewsets.ModelViewSet):
     queryset = OrdreImputation.objects.all()
-    serializer_class = OrdreImputationSerializer 
-    
+    serializer_class = OrdreImputationSerializer
+
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
             return [IsAdminUser()]
         if self.action == 'partial_update':
             return [OR(IsAdminUser(), IsChefDeParcUser())]
-        if self.action == 'update_cycle_visite': 
+        if self.action == 'update_cycle_visite':
             return [IsChefDeParcUser()]
         return [IsAuthenticated()]
 
@@ -179,7 +180,7 @@ class OrdreImputationViewSet(viewsets.ModelViewSet):
                     {'error': "As a Chef de Parc, you can only update the 'total_hours_of_work' field."},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        
+
         response = super().partial_update(request, *args, **kwargs)
 
         if response.status_code == status.HTTP_200_OK and 'total_hours_of_work' in request.data:
@@ -191,14 +192,14 @@ class OrdreImputationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='update-cycle-visite', permission_classes=[IsChefDeParcUser])
     def update_cycle_visite(self, request, pk=None):
         try:
-            ordre_imputation = self.get_object() 
+            ordre_imputation = self.get_object()
         except OrdreImputation.DoesNotExist:
             return Response({"error": "Ordre d'Imputation non trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = CycleVisiteUpdateSerializer(data=request.data)
         if serializer.is_valid():
             validated_data = serializer.validated_data
-            
+
             ordre_imputation.dernier_cycle_visite_resultat = validated_data['visite_acceptee']
             ordre_imputation.date_prochain_cycle_visite = validated_data['date_prochaine_visite']
             ordre_imputation.date_derniere_visite_effectuee = validated_data['date_visite_effectuee']
@@ -216,7 +217,7 @@ class OrdreImputationViewSet(viewsets.ModelViewSet):
                         notification_category='CYCLE_VISIT',
                         ordre_imputation_id=ordre_imputation.id_ordre
                     )
-            
+
             return Response(OrdreImputationSerializer(ordre_imputation).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -227,34 +228,82 @@ class PreventiveTaskTemplateViewSet(viewsets.ModelViewSet):
 
 class TaskViewSet(viewsets.ModelViewSet):
     queryset = Task.objects.all().order_by('-created_at')
-    serializer_class = TaskSerializer 
+    serializer_class = TaskSerializer
 
     def get_permissions(self):
         if self.action == 'create':
-            return [IsAuthenticated(), OR(IsAdminUser(), IsChefDeParcUser())] 
-        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAuthenticated(), OR(IsAdminUser(), IsChefDeParcUser())]
+        if self.action in ['update', 'partial_update', 'destroy', 'print_task']:
             return [IsAuthenticated(), IsOwnerOrAdminForTask()]
         return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
         if not user.is_authenticated or not hasattr(user, 'profile'):
-            return Task.objects.none() 
+            return Task.objects.none()
 
         qs = Task.objects.select_related('ordre', 'assigned_to_profile__user') \
-                         .prefetch_related('techniciens', 'advancement_notes__images', 'task_notifications') 
-        
+                         .prefetch_related('techniciens', 'advancement_notes__images', 'task_notifications')
+
         if user.profile.role == 'Admin':
             return qs.all().order_by('-created_at')
         elif user.profile.role == 'Chef de Parc':
             return qs.filter(assigned_to_profile=user.profile).order_by('-created_at')
-        
+
         return Task.objects.none()
+
+    @action(detail=True, methods=['get'], renderer_classes=[PassthroughPDFRenderer])
+    def print_task(self, request, pk=None):
+        task = self.get_object()
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=inch, leftMargin=inch, topMargin=inch, bottomMargin=inch)
+        styles = getSampleStyleSheet()
+        story = []
+
+        story.append(Paragraph(f"Ordre de Travail: {task.task_id_display}", styles['h1']))
+        story.append(Spacer(1, 0.2*inch))
+
+        data = [
+            ['ID Tâche:', task.task_id_display],
+            ['Ordre d\'Imputation:', task.ordre.value if task.ordre else 'N/A'],
+            ['Type:', task.get_type_display()],
+            ['Statut:', task.get_status_display()],
+            ['Assigné à:', task.assigned_to_profile.name if task.assigned_to_profile else 'N/A'],
+            ['Techniciens:', ", ".join([t.name for t in task.techniciens.all()])],
+            ['Date de début:', task.start_date.strftime('%d-%m-%Y') if task.start_date else 'N/A'],
+            ['Date de fin:', task.end_date.strftime('%d-%m-%Y') if task.end_date else 'N/A'],
+            ['Heures estimées:', str(task.estimated_hours) if task.estimated_hours is not None else 'N/A'],
+            ['Heures de travail:', str(task.hours_of_work) if task.hours_of_work is not None else 'N/A'],
+            ['Description:', Paragraph(task.tasks, styles['Normal'])],
+            ['EPI:', Paragraph(task.epi or '', styles['Normal'])],
+            ['PDR:', Paragraph(task.pdr or '', styles['Normal'])],
+        ]
+
+        table = Table(data, colWidths=[1.5*inch, 4.5*inch])
+        table.setStyle(TableStyle([
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ]))
+        story.append(table)
+        story.append(Spacer(1, 0.2*inch))
+
+        if task.advancement_notes.exists():
+            story.append(Paragraph("Notes d'Avancement", styles['h2']))
+            for note in task.advancement_notes.all():
+                story.append(Paragraph(f"Note du {note.date.strftime('%d-%m-%Y')} par {note.created_by_username or 'Système'}", styles['h3']))
+                story.append(Paragraph(note.note, styles['Normal']))
+                story.append(Spacer(1, 0.1*inch))
+
+        doc.build(story)
+        buffer.seek(0)
+        return HttpResponse(buffer, content_type='application/pdf')
 
     def perform_create(self, serializer):
         current_user_profile = self.request.user.profile
-        task_status = 'assigned' 
-        
+        task_status = 'assigned'
+
         if current_user_profile.role == 'Admin':
             if not serializer.validated_data.get('assigned_to_profile'):
                  raise drf_exceptions.ValidationError({"assigned_to_profile_id": "Admin must assign the task to a Chef de Parc."})
@@ -271,7 +320,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                     notification_category='TASK'
                 )
         elif current_user_profile.role == 'Chef de Parc':
-            task_status = 'in progress' 
+            task_status = 'in progress'
             task = serializer.save(assigned_to_profile=current_user_profile, status=task_status)
             task_identifier = task.task_id_display or task.id
             admin_profiles = UserProfile.objects.filter(role='Admin')
@@ -279,16 +328,16 @@ class TaskViewSet(viewsets.ModelViewSet):
                 if admin_profile.user:
                     create_notification(
                         message=f"Nouveau OT '{task_identifier}' créé par {current_user_profile.name} est maintenant '{task.get_status_display()}'.",
-                        recipient_type='UserInRole', 
+                        recipient_type='UserInRole',
                         recipient_role='Admin',
-                        recipient_user_id=admin_profile.user.id, 
+                        recipient_user_id=admin_profile.user.id,
                         task_id=task.id,
                         notification_category='TASK'
                     )
         else:
             raise permissions.PermissionDenied("Vous n'avez pas la permission de créer des ordres de travail.")
-        
-        if task and not task.task_id_display: 
+
+        if task and not task.task_id_display:
             generate_task_id_display(task)
             task.refresh_from_db()
 
@@ -298,7 +347,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         original_status = instance.status
         current_user_profile = self.request.user.profile
         request_data = self.request.data
-        
+
         updated_status = original_status
         status_changed = False
 
@@ -310,15 +359,15 @@ class TaskViewSet(viewsets.ModelViewSet):
                     status_changed = True
 
         elif current_user_profile.role == 'Chef de Parc':
-            if original_status == 'assigned': 
-                updated_status = 'in progress' 
+            if original_status == 'assigned':
+                updated_status = 'in progress'
                 status_changed = True
             elif original_status == 'in progress':
                 status_update_for_chef = request_data.get('status_update_for_chef')
                 if status_update_for_chef == 'closed':
                     updated_status = 'closed'
                     status_changed = True
-        
+
         # Save other field updates first
         instance = serializer.save()
 
@@ -326,10 +375,16 @@ class TaskViewSet(viewsets.ModelViewSet):
         if status_changed:
             instance.status = updated_status
             if updated_status == 'closed' and original_status != 'closed':
-                instance.closed_at = timezone.now()
+                now = timezone.now()
+                instance.closed_at = now
+                if instance.start_date and instance.start_time:
+                    start_datetime = timezone.make_aware(datetime.combine(instance.start_date, instance.start_time))
+                    duration = now - start_datetime
+                    instance.actual_hours_worked = duration.total_seconds() / 3600
             elif original_status == 'closed' and updated_status != 'closed':
                 instance.closed_at = None
-            instance.save(update_fields=['status', 'closed_at', 'updated_at'])
+                instance.actual_hours_worked = None
+            instance.save()
 
             # Notification Logic
             task_identifier = instance.task_id_display or instance.id
@@ -339,7 +394,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                     message = f"L'OT '{task_identifier}' assigné à {current_user_profile.name} est maintenant '{instance.get_status_display()}'."
                 elif updated_status == 'closed':
                     message = f"L'OT '{task_identifier}' a été clôturé par {current_user_profile.name}."
-                
+
                 if message:
                     admin_profiles = UserProfile.objects.filter(role='Admin')
                     for admin_profile in admin_profiles:
@@ -359,46 +414,46 @@ class TaskViewSet(viewsets.ModelViewSet):
 class AdvancementNoteViewSet(viewsets.ModelViewSet):
     queryset = AdvancementNote.objects.all().order_by('-created_at')
     serializer_class = AdvancementNoteSerializer
-    
+
     def get_permissions(self):
         if self.action in ['update', 'partial_update', 'destroy']:
             return [IsAuthenticated(), IsOwnerOrAdminForAdvancementNote()]
         if self.action == 'create':
              return [IsAuthenticated(), OR(IsAdminUser(), IsChefDeParcUser())]
-        return [IsAuthenticated()] 
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
         if not user.is_authenticated or not hasattr(user, 'profile'):
             return AdvancementNote.objects.none()
-        
+
         qs = AdvancementNote.objects.select_related('task', 'created_by').prefetch_related('images')
 
         if user.profile.role == 'Admin':
-            return qs.all().order_by('-created_at') 
+            return qs.all().order_by('-created_at')
         elif user.profile.role == 'Chef de Parc':
             task_ids = Task.objects.filter(assigned_to_profile=user.profile).values_list('id', flat=True)
             return qs.filter(task_id__in=task_ids).order_by('-created_at')
-        
+
         return AdvancementNote.objects.none()
-            
-    @transaction.atomic 
+
+    @transaction.atomic
     def perform_create(self, serializer):
         task_instance = serializer.validated_data.get('task')
         user_profile = self.request.user.profile
-        
+
         if user_profile.role == 'Chef de Parc':
             if task_instance.assigned_to_profile != user_profile:
                 raise permissions.PermissionDenied("You can only add notes to tasks assigned to you.")
-        
+
         advancement_note = serializer.save(created_by=self.request.user)
-        
-        images_data = self.request.FILES.getlist('image') 
+
+        images_data = self.request.FILES.getlist('image')
         for image_file in images_data:
             AdvancementNoteImage.objects.create(advancement_note=advancement_note, image=image_file)
-            
+
         task_identifier = task_instance.task_id_display or task_instance.id
-        if user_profile.role == 'Chef de Parc': 
+        if user_profile.role == 'Chef de Parc':
             admin_profiles = UserProfile.objects.filter(role='Admin')
             for admin_profile in admin_profiles:
                  if admin_profile.user:
@@ -422,16 +477,16 @@ class AdvancementNoteViewSet(viewsets.ModelViewSet):
 
 class NotificationViewSet(viewsets.ModelViewSet):
     serializer_class = NotificationSerializer
-    permission_classes = [IsAuthenticated] 
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
         if not user.is_authenticated or not hasattr(user, 'profile'):
             return Notification.objects.none()
-        
+
         q_role_general = Q(recipient_type='Role', recipient_role=user.profile.role)
         q_user_specific = Q(recipient_type='UserInRole', recipient_user=user, recipient_role=user.profile.role)
-        
+
         return Notification.objects.filter(q_role_general | q_user_specific)\
                                  .select_related('recipient_user', 'task_related', 'ordre_imputation_related')\
                                  .distinct().order_by('-timestamp')
@@ -447,7 +502,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
             notification = self.get_queryset().get(pk=pk)
         except Notification.DoesNotExist:
             return Response({'error': 'Notification not found or not accessible.'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         notification.read = True
         notification.save()
         return Response({'status': 'notification marked as read'}, status=status.HTTP_200_OK)
@@ -472,7 +527,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save() 
+        user = serializer.save()
         response_serializer = AdminUserListSerializer(user, context=self.get_serializer_context())
         headers = self.get_success_headers(response_serializer.data)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -481,7 +536,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         if instance == request.user:
             return Response({"detail": "You cannot delete your own account."}, status=status.HTTP_403_FORBIDDEN)
-        self.perform_destroy(instance) 
+        self.perform_destroy(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -491,20 +546,20 @@ class CustomAuthToken(ObtainAuthToken):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         token, created = Token.objects.get_or_create(user=user)
-        
+
         user_profile_name = user.username
         user_profile_role = None
 
         if hasattr(user, 'profile') and user.profile:
             user_profile_name = user.profile.name
             user_profile_role = user.profile.role
-            
+
         return Response({
             'token': token.key,
             'user_id': user.pk,
             'username': user.username,
-            'name': user_profile_name, 
-            'role': user_profile_role, 
+            'name': user_profile_name,
+            'role': user_profile_role,
         })
 
 class PreventiveChecklistSubmissionView(views.APIView):
@@ -513,11 +568,11 @@ class PreventiveChecklistSubmissionView(views.APIView):
 
     def post(self, request, *args, **kwargs):
         serializer = PreventiveChecklistSubmissionSerializer(
-            data=request.data, 
+            data=request.data,
             context={'request': request}
         )
         if serializer.is_valid():
-            created_task = serializer.save() 
+            created_task = serializer.save()
             response_serializer = TaskSerializer(created_task, context={'request': request})
             return Response(response_serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -531,18 +586,22 @@ class AdminTaskReportView(views.APIView):
         start_date_str = request.query_params.get('start_date')
         end_date_str = request.query_params.get('end_date')
         ordre_imputation_values = request.query_params.getlist('ordre_imputation_value')
+        technicien_ids = request.query_params.getlist('technicien_id')
 
         queryset = Task.objects.select_related(
-            'ordre', 
+            'ordre',
             'assigned_to_profile__user'
         ).prefetch_related(
-            'techniciens', 
-            'advancement_notes__images', 
+            'techniciens',
+            'advancement_notes__images',
             'advancement_notes__created_by'
         ).all().order_by('ordre__value', 'created_at')
 
         if ordre_imputation_values:
             queryset = queryset.filter(ordre__value__in=ordre_imputation_values)
+
+        if technicien_ids:
+            queryset = queryset.filter(techniciens__id_technician__in=technicien_ids).distinct()
 
         if start_date_str and end_date_str:
             try:
@@ -553,13 +612,13 @@ class AdminTaskReportView(views.APIView):
                     (Q(end_date__gte=start_date) | Q(end_date__isnull=True))
                 )
             except ValueError:
-                raise drf_exceptions.ValidationError({"error": "Invalid date format. Please use colorChoice-MM-DD."})
+                raise drf_exceptions.ValidationError({"error": "Invalid date format. Please use YYYY-MM-DD."})
         elif start_date_str or end_date_str:
              raise drf_exceptions.ValidationError({"error": "Both start date and end date are required for date range filtering, or neither for no date filter."})
-        
+
         return queryset
 
-    def generate_pdf_report(self, queryset, request, start_date_str=None, end_date_str=None, ordre_imputation_value=None):
+    def generate_pdf_report(self, queryset, request, start_date_str=None, end_date_str=None, ordre_imputation_value=None, technicien_ids=None):
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=inch/2, leftMargin=inch/2, topMargin=inch/2, bottomMargin=inch/2)
         styles = getSampleStyleSheet()
@@ -569,12 +628,19 @@ class AdminTaskReportView(views.APIView):
         filter_criteria = []
         if ordre_imputation_value and len(ordre_imputation_value) > 0:
             filter_criteria.append(f"Ordre(s) d'Imputation: {', '.join(ordre_imputation_value)}")
+
+        if technicien_ids:
+            techniciens = Technician.objects.filter(id_technician__in=technicien_ids)
+            technicien_names = [tech.name for tech in techniciens]
+            if technicien_names:
+                filter_criteria.append(f"Technicien(s): {', '.join(technicien_names)}")
+
         if start_date_str and end_date_str:
             filter_criteria.append(f"Période: {start_date_str} au {end_date_str}")
-        
+
         if filter_criteria:
             title_text += " (" + ", ".join(filter_criteria) + ")"
-            
+
         story.append(Paragraph(title_text, styles['h2']))
         story.append(Paragraph(f"Généré le: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')} par {request.user.username}", styles['Normal']))
         story.append(Spacer(1, 0.15*inch))
@@ -587,17 +653,17 @@ class AdminTaskReportView(views.APIView):
 
         small_text_style = ParagraphStyle('small_text', parent=styles['Normal'], fontSize=7, leading=9)
         header_style = ParagraphStyle('header_text', parent=styles['Normal'], fontSize=7, leading=9, fontName='Helvetica-Bold', alignment=1)
-        
+
         task_table_data = []
-        
+
         task_headers = [
-            Paragraph("ID Tâche", header_style), Paragraph("O.I.", header_style), Paragraph("Type", header_style), 
-            Paragraph("Description Tâche", header_style), Paragraph("Statut", header_style), 
-            Paragraph("Chef Parc", header_style), Paragraph("Techniciens", header_style), 
+            Paragraph("ID Tâche", header_style), Paragraph("O.I.", header_style), Paragraph("Type", header_style),
+            Paragraph("Description Tâche", header_style), Paragraph("Statut", header_style),
+            Paragraph("Chef Parc", header_style), Paragraph("Techniciens", header_style),
             Paragraph("H Travail", header_style), Paragraph("Début", header_style), Paragraph("Fin", header_style)
         ]
         task_table_data.append(task_headers)
-        
+
         col_widths = [0.7*inch, 1.0*inch, 0.7*inch, 1.8*inch, 0.6*inch, 0.9*inch, 1.0*inch, 0.5*inch, 0.6*inch, 0.6*inch]
 
         for task in queryset:
@@ -618,7 +684,7 @@ class AdminTaskReportView(views.APIView):
 
             if task.advancement_notes.exists():
                 task_table_data.append([Paragraph(f"<b>Notes pour Tâche {task.task_id_display or task.id}:</b>", small_text_style)] + [''] * (len(col_widths) - 1))
-                
+
                 notes_header_row_text = ["Date", "Auteur", "Note", "Images"]
                 task_table_data.append([
                     Paragraph(f"<b>{notes_header_row_text[0]}</b>", small_text_style),
@@ -635,7 +701,7 @@ class AdminTaskReportView(views.APIView):
                         if img_obj.image and hasattr(img_obj.image, 'path'):
                             try:
                                 if os.path.exists(img_obj.image.path):
-                                    img = Image(img_obj.image.path, width=0.4*inch, height=0.4*inch) 
+                                    img = Image(img_obj.image.path, width=0.4*inch, height=0.4*inch)
                                     img.hAlign = 'LEFT'
                                     image_flowables.append(img)
                                 else:
@@ -644,7 +710,7 @@ class AdminTaskReportView(views.APIView):
                                 image_flowables.append(Paragraph("[err img]", small_text_style))
                         else:
                              image_flowables.append(Paragraph("[ref img invalide]", small_text_style))
-                    
+
                     image_content = image_flowables if image_flowables else Paragraph("Aucune", small_text_style)
 
                     note_detail_row = [
@@ -659,7 +725,7 @@ class AdminTaskReportView(views.APIView):
                 task_table_data.append([''] * len(col_widths))
 
         table = Table(task_table_data, colWidths=col_widths, repeatRows=1)
-        
+
         style_commands = [
             ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
             ('TEXTCOLOR', (0,0), (-1,0), colors.black),
@@ -675,15 +741,15 @@ class AdminTaskReportView(views.APIView):
             if not row_content or not isinstance(row_content[0], Paragraph): continue
 
             first_cell_text = row_content[0].text
-            
+
             if "<b>Notes pour Tâche" in first_cell_text:
                 style_commands.append(('SPAN', (0, i), (-1, i)))
                 style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.lightblue))
                 style_commands.append(('TEXTCOLOR', (0,i), (-1,i), colors.black))
-                
+
                 if i + 1 < len(task_table_data):
-                    style_commands.append(('SPAN', (2, i + 1), (5, i + 1))) 
-                    style_commands.append(('SPAN', (6, i + 1), (9, i + 1))) 
+                    style_commands.append(('SPAN', (2, i + 1), (5, i + 1)))
+                    style_commands.append(('SPAN', (6, i + 1), (9, i + 1)))
                     style_commands.append(('BACKGROUND', (0, i + 1), (-1, i + 1), colors.lightcyan))
                     style_commands.append(('ALIGN', (0, i + 1), (-1, i + 1), 'CENTER'))
                     style_commands.append(('FONTNAME', (0, i + 1), (-1, i + 1), 'Helvetica-Bold'))
@@ -692,7 +758,7 @@ class AdminTaskReportView(views.APIView):
                 row_before_previous = task_table_data[i-2]
                 if isinstance(row_before_previous[0], Paragraph) and "<b>Notes pour Tâche" in row_before_previous[0].text:
                     previous_row = task_table_data[i-1]
-                    if isinstance(previous_row[0], Paragraph) and "<b>Date</b>" in previous_row[0].text: 
+                    if isinstance(previous_row[0], Paragraph) and "<b>Date</b>" in previous_row[0].text:
                         style_commands.append(('SPAN', (2, i), (5, i)))
                         style_commands.append(('SPAN', (6, i), (9, i)))
                         style_commands.append(('BACKGROUND', (0, i), (-1, i), colors.whitesmoke))
@@ -700,16 +766,17 @@ class AdminTaskReportView(views.APIView):
 
         table.setStyle(TableStyle(style_commands))
         story.append(table)
-        
+
         doc.build(story)
         buffer.seek(0)
         return buffer
 
     def get(self, request, *args, **kwargs):
-        output_format = request.query_params.get('format', 'json') 
+        output_format = request.query_params.get('format', 'json')
         start_date_str = request.query_params.get('start_date')
         end_date_str = request.query_params.get('end_date')
         ordre_imputation_values = request.query_params.getlist('ordre_imputation_value')
+        technicien_ids = request.query_params.getlist('technicien_id')
 
         try:
             queryset = self.get_filtered_queryset(request)
@@ -732,8 +799,8 @@ class AdminTaskReportView(views.APIView):
                         {"error": "Pour générer un PDF, veuillez sélectionner une plage de dates ou au moins un Ordre d'Imputation spécifique."},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                
-                pdf_buffer = self.generate_pdf_report(queryset, request, start_date_str, end_date_str, ordre_imputation_values)
+
+                pdf_buffer = self.generate_pdf_report(queryset, request, start_date_str, end_date_str, ordre_imputation_values, technicien_ids)
                 response = HttpResponse(pdf_buffer, content_type='application/pdf')
                 response['Content-Disposition'] = f'attachment; filename="rapport_taches_{timezone.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
                 return response
